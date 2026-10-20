@@ -1,0 +1,66 @@
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag Version"
+        required: true
+        default: "v"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # Never tag a module the cards would then build against if it is broken.
+      - name: Type-check and test
+        run: |
+          npm install --no-audit --no-fund
+          npm run type-check
+          npm test
+
+      - name: "Set version number from trigger's tag"
+        id: update_version
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          # npm wants a bare semver in package.json: v0.1.0 -> 0.1.0
+          yq -i -o json ".version=\"${TAG#v}\"" "${{ github.workspace }}/package.json"
+          git config --global user.email "moranderic31@gmail.com"
+          git config --global user.name "Elwinmage"
+          git commit -a -m "Update version" || echo "Version already set"
+          git push origin HEAD:main
+          SHA=`git rev-parse HEAD`
+          echo "tag_sha=${SHA}" >> $GITHUB_OUTPUT
+
+      - name: Create tag
+        if: steps.update_version.outcome == 'success'
+        uses: actions/github-script@v9
+        id: create_tag
+        with:
+          script: |
+            github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'refs/tags/${{ github.event.inputs.tag}}',
+              sha: '${{steps.update_version.outputs.tag_sha}}'
+            })
+
+      # No asset: consumers depend on the tag itself
+      # ("ha-maintenance-ui": "github:Elwinmage/ha-maintenance-ui#<tag>").
+      - name: Create Release
+        uses: ncipollo/release-action@v1
+        with:
+          prerelease: true # Passe à false si tu veux des versions stables
+          tag: ${{ github.event.inputs.tag }}
+          generateReleaseNotes: true
+          allowUpdates: true
+          token: ${{ secrets.GITHUB_TOKEN }}
